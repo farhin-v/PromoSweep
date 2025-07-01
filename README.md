@@ -1,4 +1,4 @@
-x# Gmail Coupon Summary with n8n
+# Gmail Coupon Summary with n8n
 
 This project uses [n8n](https://n8n.io) to automate the extraction of coupon codes from promotional Gmail emails and sends a daily summary email with the extracted information.
 
