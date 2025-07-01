@@ -1,0 +1,192 @@
+{
+  "name": "promosweep",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -620,
+        -180
+      ],
+      "id": "cf8ce32a-4b54-4cb4-b542-b911230f747f",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "CATEGORY_PROMOTIONS"
+          ]
+        },
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -400,
+        -180
+      ],
+      "id": "e9aaa23f-0dd4-4d6c-938f-92a34aeb0700",
+      "name": "Get many messages",
+      "webhookId": "91ed506d-bc66-4cc5-a73e-97cab6f730a2",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "pjPHHHkacC0ItJgD",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- Strip HTML ---\nfunction stripHTML(raw) {\n  return raw\n    .replace(/<\\/?[^>]+(>|$)/g, ' ')\n    .replace(/&[a-zA-Z0-9#]+;/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\n// --- Patterns and filters ---\nconst CODE_TRIGGERS = /\\b(?:enter\\s+code|use\\s+code|apply\\s+code|redeem\\s+code)\\b[\\s\\S]{0,50}?([A-Z0-9]{8,15})/gi;\nconst GENERIC_CODE = /\\b([A-Z0-9]{10,})\\b/g;  // auto-match only for 10+ length\n\nconst FALSE = new Set([\n  'DOCTYPE','HTML','HEAD','HEADER','BODY','DIV','SPAN','SCRIPT','STYLE','PUBLIC',\n  'XHTML','HTTP','HTTPS','EMAIL','GMAIL','PDF','DOC','USD','API','JANUARY','CHANEL','ULTA','FREE','SALE'\n]);\n\nfunction hasContext(text, pos, code) {\n  const snippet = text.slice(Math.max(0,pos-50), pos+code.length+50).toLowerCase();\n  return /\\b(code|coupon|promo|offer|save|checkout|redeem)\\b/.test(snippet);\n}\n\n// --- Extraction functions ---\nfunction extractCoupons(text) {\n  const found = new Set();\n  let m;\n  \n  // 1) Trigger-based extraction\n  while ((m = CODE_TRIGGERS.exec(text)) !== null) {\n    const c = m[1].trim();\n    if (!FALSE.has(c) && c.length <= 15) found.add(c);\n  }\n  \n  // 2) Generic long codes\n  while ((m = GENERIC_CODE.exec(text)) !== null) {\n    const c = m[1];\n    const pos = m.index;\n    if (c.length >= 10 && !FALSE.has(c) && hasContext(text, pos, c)) found.add(c);\n  }\n\n  return Array.from(found);\n}\n\nfunction extractDiscounts(text) {\n  const matches = text.match(/\\b(?:save|get)\\s*([1-9][0-9]?)\\s*(?:%|percent)\\s*(?:off)?/gi) || [];\n  return [...new Set(matches.map(m => m.match(/[1-9][0-9]?/)[0] + '%'))];\n}\n\nfunction extractExpiry(text) {\n  const m = text.match(/(?:expires|valid until|offer ends)\\s*(?:on\\s*)?([A-Z][a-z]+ \\d{1,2}(?:, \\d{4})?)/i);\n  return m ? m[1] : null;\n}\n\n// --- Main processing ---\nconst results = items.map(item => {\n  const raw = item.json.html || item.json.textBody || item.json.snippet || '';\n  const body = stripHTML(raw);\n  const full = (item.json.subject || '') + ' ' + body;\n\n  return {\n    json: {\n      from: item.json.from?.text || '',\n      subject: item.json.subject || '',\n      date: item.json.date || '',\n      threadId: item.json.threadId || '',\n      messageId: item.json.id || '',\n      couponCodes: extractCoupons(full),\n      discountPercents: extractDiscounts(full),\n      expiryDate: extractExpiry(full),\n    }\n  };\n});\n\nreturn results;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -180,
+        -180
+      ],
+      "id": "eb29d270-f6aa-4218-b0f4-ae9e790cd9ad",
+      "name": "extract coupon"
+    },
+    {
+      "parameters": {
+        "resource": "thread",
+        "operation": "trash",
+        "threadId": "={{$json.threadId}}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        40,
+        220
+      ],
+      "id": "ef48992b-6a51-4a6d-97ad-a7fa9041e12f",
+      "name": "Trash a thread",
+      "webhookId": "35d991b5-4ede-4c30-8298-ab29cd354712",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "pjPHHHkacC0ItJgD",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flatten input items\nconst allItems = Array.isArray(items) ? items.flat() : [items];\n\n// Log first item to debug coupon path\nconsole.log(\"Sample Input Item:\", JSON.stringify(allItems[0], null, 2));\n\nif (!allItems || allItems.length === 0) {\n  return [{\n    json: {\n      to: \"milivasaya@gmail.com\",\n      subject: `Daily Coupon Summary - No emails processed`,\n      htmlBody: \"<p>No emails were processed today.</p>\",\n      textBody: \"No emails were processed today.\"\n    }\n  }];\n}\n\n// Format today’s date\nconst today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });\n\n// === Detect coupons even if nested ===\nfunction getCouponCodes(item) {\n  return (\n    item?.json?.couponCodes ||\n    item?.json?.output?.couponCodes ||\n    item?.json?.data?.couponCodes ||\n    []\n  );\n}\n\n// Find all items with valid coupon codes\nconst emailsWithCoupons = allItems.filter(item => {\n  const codes = getCouponCodes(item);\n  return Array.isArray(codes) && codes.length > 0;\n});\n\nconst totalEmailsProcessed = allItems.length;\nconst totalCouponsFound = emailsWithCoupons.reduce((total, item) =>\n  total + getCouponCodes(item).length, 0\n);\n\n// Build coupon detail list\nconst couponDetails = [];\nemailsWithCoupons.forEach(item => {\n  const companyName = extractCompanyName(item.json.from);\n  const emailLink = `https://mail.google.com/mail/u/0/#search/${item.json.threadId}`;\n  const codes = getCouponCodes(item);\n\n  codes.forEach(code => {\n    couponDetails.push({\n      code: code,\n      company: companyName,\n      subject: item.json.subject,\n      threadId: item.json.threadId,\n      date: item.json.date,\n      link: emailLink\n    });\n  });\n});\n\n// Extract company name from \"From\" field\nfunction extractCompanyName(fromEmail) {\n  if (!fromEmail) return 'Unknown Sender';\n  const emailMatch = fromEmail.match(/<([^>]+)>/) || [null, fromEmail];\n  const email = emailMatch[1] || fromEmail;\n  const domain = email.split('@')[1]?.toLowerCase() || 'unknown';\n  let companyName = domain\n    .replace(/^(www\\.|mail\\.|no-reply\\.|noreply\\.|info\\.|support\\.)/, '')\n    .replace(/\\.(com|org|net|edu|gov|co\\.uk|co\\.in|io|biz)$/, '')\n    .split('.')[0];\n  return companyName.charAt(0).toUpperCase() + companyName.slice(1);\n}\n\n// Generate HTML content\nfunction generateEmailHTML() {\n  let html = `\n    <html>\n      <head>\n        <style>\n          body { font-family: Arial, sans-serif; margin: 20px; }\n          .header { background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; }\n          .summary { background-color: #e8f5e9; padding: 15px; border-radius: 6px; margin-bottom: 20px; }\n          .coupon-item { background-color: #fff3e0; padding: 12px; margin: 10px 0; border-left: 4px solid #ff9800; border-radius: 4px; }\n          .coupon-code { font-family: 'Courier New', monospace; font-weight: bold; background-color: #f5f5f5; padding: 4px 8px; border-radius: 4px; }\n          .company-name { color: #1976d2; font-weight: bold; }\n          .no-coupons { background-color: #ffebee; padding: 15px; border-radius: 6px; color: #c62828; }\n          .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }\n        </style>\n      </head>\n      <body>\n        <div class=\"header\">\n          <h2>📧 Daily Coupon Summary - ${today}</h2>\n        </div>\n        \n        <div class=\"summary\">\n          <h3>📊 Summary</h3>\n          <p><strong>Total emails processed:</strong> ${totalEmailsProcessed}</p>\n          <p><strong>Emails with coupons:</strong> ${emailsWithCoupons.length}</p>\n          <p><strong>Total coupons found:</strong> ${totalCouponsFound}</p>\n        </div>\n  `;\n\n  if (totalCouponsFound > 0) {\n    html += `<h3>🎟️ Coupon Codes Found</h3>`;\n    couponDetails.forEach(item => {\n      html += `\n        <div class=\"coupon-item\">\n          <div><strong>Code:</strong> <span class=\"coupon-code\">${item.code}</span></div>\n          <div><strong>Company:</strong> <span class=\"company-name\">${item.company}</span></div>\n          <div><strong>Subject:</strong> ${item.subject}</div>\n          <div><strong>Gmail Link:</strong> <a href=\"${item.link}\" target=\"_blank\">View Email</a></div>\n        </div>\n      `;\n    });\n  } else {\n    html += `\n      <div class=\"no-coupons\">\n        <h3>😔 No Coupon Codes Found Today</h3>\n        <p>No promotional emails with coupon codes were detected in today's scan.</p>\n      </div>\n    `;\n  }\n\n  html += `\n        <div class=\"footer\">\n          <p>This automated summary was generated by your n8n coupon extraction workflow.<br>\n          Processed on ${new Date().toLocaleString()}</p>\n        </div>\n      </body>\n    </html>\n  `;\n\n  return html;\n}\n\n// Generate plain text fallback\nfunction generateEmailText() {\n  let text = `Daily Coupon Summary - ${today}\\n`;\n  text += `=${'='.repeat(40)}\\n\\n`;\n  text += `SUMMARY:\\n`;\n  text += `- Total emails processed: ${totalEmailsProcessed}\\n`;\n  text += `- Emails with coupons: ${emailsWithCoupons.length}\\n`;\n  text += `- Total coupons found: ${totalCouponsFound}\\n\\n`;\n\n  if (totalCouponsFound > 0) {\n    text += `COUPON CODES FOUND:\\n${'-'.repeat(30)}\\n`;\n    couponDetails.forEach((item, index) => {\n      text += `${index + 1}. Code: ${item.code}\\n`;\n      text += `   Company: ${item.company}\\n`;\n      text += `   Subject: ${item.subject}\\n`;\n      text += `   Gmail Link: ${item.link}\\n\\n`;\n    });\n  } else {\n    text += `NO COUPON CODES FOUND TODAY\\nNo promotional emails with coupon codes were detected in today's scan.\\n\\n`;\n  }\n\n  text += `\\nThis automated summary was generated by your n8n coupon extraction workflow.\\nProcessed on ${new Date().toLocaleString()}`;\n  return text;\n}\n\n// Return single summary email object\nreturn [{\n  json: {\n    to: \"milivasaya@gmail.com\",  // Replace with your actual email\n    subject: `Daily Coupon Summary - ${today} (${totalCouponsFound} coupons found)`,\n    htmlBody: generateEmailHTML(),\n    textBody: generateEmailText(),\n    totalEmailsProcessed: totalEmailsProcessed,\n    totalCouponsFound: totalCouponsFound,\n    couponDetails: couponDetails\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        40,
+        -320
+      ],
+      "id": "27e37a92-7b82-4949-a595-f4f2f31d494f",
+      "name": "Summary_email"
+    },
+    {
+      "parameters": {
+        "sendTo": "milivasaya@gmail.com",
+        "subject": "={{$json[\"subject\"]}}",
+        "message": "={{$json[\"htmlBody\"]}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        220,
+        -320
+      ],
+      "id": "2da585c0-0e1b-43ec-b64b-b8b42fd54eb4",
+      "name": "Send a message",
+      "webhookId": "2ae6107b-ba4e-4759-8d78-82c85d462b57",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "pjPHHHkacC0ItJgD",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get many messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many messages": {
+      "main": [
+        [
+          {
+            "node": "extract coupon",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "extract coupon": {
+      "main": [
+        [
+          {
+            "node": "Trash a thread",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Summary_email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trash a thread": {
+      "main": [
+        []
+      ]
+    },
+    "Summary_email": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1527d908-3e72-435e-ba25-af94cfe40724",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d9bdd7da7d7d8932fd13fe47a569c689b6f67a9b0f6dfd2e5e7805c6e2acb0ed"
+  },
+  "id": "O1zQhdg4Tj8qCwtX",
+  "tags": []
+}
